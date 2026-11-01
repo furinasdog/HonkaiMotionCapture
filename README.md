@@ -44,6 +44,8 @@ Capture.Stop();
 
 `Stop` 异步请求协作停止并立即清除有效追踪。`IsStopping` 会保持到工作线程释放摄像头和 SDK；停止未完成时拒绝重复启动。插件不会强杀 UE 线程。销毁采集对象会请求停止，模块保留工作线程直到退出；模块卸载时等待所有线程结束。
 
+OpenCV 运行库由官方 `OpenCVHelper` 模块持有。启动前只使用 `GetModuleHandleW` 检查模块是否已加载，不增加引用、不释放借用句柄。UE Windows 的 `GetDllHandle` 对已加载模块可能返回借用句柄，不能把该结果当作独立引用释放，否则重复启动时缓存的延迟导入地址可能失效。
+
 OpenCV DirectShow 的读取/释放和 SDK 关闭可能受驱动或 SDK 阻塞影响，当前不能保证有界停止时间。模块卸载可能因此等待，不能将这种等待称为已解决。进程内原生 DLL 的严重故障也可能影响 UE；原先外部进程的崩溃隔离不再存在。
 
 官方预编译 MediaPipe SDK 包含 usage/performance telemetry，官方没有提供关闭 API。此插件在 UE 进程内运行，**不再有 AppContainer 网络隔离，不声称完全离线或绝不联网**；插件本身没有另加图像上传接口。相关事实和限制见 [上游 issue 6291](https://github.com/google-ai-edge/mediapipe/issues/6291) 与 [MediaPipe API 条款](https://developers.google.com/edge/mediapipe/legal/tos)。
@@ -59,6 +61,16 @@ cmake -S Tests -B Tests/build -A x64 -DMEDIAPIPE_RUNTIME_DIR='原生运行库/bi
 cmake --build Tests/build --config Release
 ctest --test-dir Tests/build -C Release --output-on-failure
 ```
+
+只验证真实 OpenCV 模块的预检查生命周期，不启动摄像头、MediaPipe 或 UE：
+
+```powershell
+cmake -S Tests -B Tests/build -A x64 -DOPENCV_RUNTIME_DLL='引擎插件内opencv_world455.dll完整路径'
+cmake --build Tests/build --config Release --target RuntimeModuleLiveness
+ctest --test-dir Tests/build -C Release -R OpenCvRuntimeModuleLiveness --output-on-failure
+```
+
+该测试直接编译生产预检查函数，连续三轮加载/卸载实际 OpenCV DLL；每轮2000次检查验证构造函数代码所在模块持续存活，并验证最后一个拥有者释放后模块能卸载。测试不调用 `VideoCapture` 构造或相机接口，不使用 PIN，也不以快照轮询替代模块存活验证。
 
 独立 C++ fixture 已完成两轮 SDK 初始化、每轮 3 个递增 VIDEO 帧和关闭：均检测到面部 52 通道、双手各 21 个 image/world 点，姿态在每轮 3 帧中有 2 帧检出 33 个 image/world 点，未检出的帧保持为空。本机重复试验观察到初始化约 150–200 ms、推理约 28–65 ms、关闭约 27–75 ms，均为这张静态测试图片的结果。SDK stderr 包含 clearcut 连接尝试失败，不能据此声称插件实施了网络隔离。
 

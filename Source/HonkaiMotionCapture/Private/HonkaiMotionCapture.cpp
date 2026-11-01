@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #include "HonkaiMotionCapture.h"
 #include "NativeMediaPipe.h"
+#include "OpenCvRuntimeCheck.h"
 
 #include "HAL/Event.h"
 #include "HAL/PlatformProcess.h"
@@ -233,9 +234,8 @@ bool FHonkaiMotionCapture::Start(const FHonkaiCaptureSettings& Settings, FString
     { Error = TEXT("UE OpenCV 模块不可用。"); return false; }
     const auto OpenCVPlugin = IPluginManager::Get().FindPlugin(TEXT("OpenCV"));
     const FString OpenCVPath = OpenCVPlugin.IsValid() ? OpenCVPlugin->GetBaseDir() / TEXT(UE_STRINGIZE(OPENCV_PLATFORM_PATH)) / TEXT(UE_STRINGIZE(OPENCV_DLL_NAME)) : FString();
-    void* Probe = OpenCVPath.IsEmpty() ? nullptr : FPlatformProcess::GetDllHandle(*OpenCVPath);
-    if (!Probe) { Error = TEXT("UE OpenCV 原生运行库加载失败。"); return false; }
-    FPlatformProcess::FreeDllHandle(Probe);
+    if (!HonkaiCaptureNative::IsOpenCvRuntimeLoaded(*OpenCVPath))
+    { Error = TEXT("UE OpenCV 原生运行库未成功加载。"); return false; }
     ReapWorkers(); Impl->Worker.Reset();
     Impl->State->Status(EHonkaiCaptureState::Starting, TEXT("正在初始化动捕…"));
     Impl->Worker = MakeShared<FCaptureWorker, ESPMode::ThreadSafe>(Impl->State, Settings, Root);
