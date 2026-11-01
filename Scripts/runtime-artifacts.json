@@ -1,0 +1,25 @@
+{
+  "mediapipe_version": "0.10.35",
+  "artifacts": [
+    {
+      "source": "libmediapipe.dll",
+      "target": "Binaries/ThirdParty/Win64/libmediapipe.dll",
+      "sha256": "AA8E6C1B618C30CD3A6AD584DEE1B2F2C99C3F3025D683BADA36E1566D9092B7"
+    },
+    {
+      "source": "Models/face_landmarker.task",
+      "target": "Resources/Models/face_landmarker.task",
+      "sha256": "64184E229B263107BC2B804C6625DB1341FF2BB731874B0BCC2FE6544E0BC9FF"
+    },
+    {
+      "source": "Models/hand_landmarker.task",
+      "target": "Resources/Models/hand_landmarker.task",
+      "sha256": "FBC2A30080C3C557093B5DDFC334698132EB341044CCEE322CCF8BCF3607CDE1"
+    },
+    {
+      "source": "Models/pose_landmarker_lite.task",
+      "target": "Resources/Models/pose_landmarker_lite.task",
+      "sha256": "59929E1D1EE95287735DDD833B19CF4AC46D29BC7AFDDBBF6753C459690D574A"
+    }
+  ]
+}

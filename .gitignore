@@ -1,0 +1,9 @@
+/Binaries/
+/Intermediate/
+/Saved/
+/.vs/
+/Resources/Models/*.task
+/Tests/build/
+*.pdb
+*.obj
+*.exe

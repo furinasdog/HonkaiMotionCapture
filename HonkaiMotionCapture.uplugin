@@ -1,0 +1,17 @@
+{
+  "FileVersion": 3,
+  "Version": 1,
+  "VersionName": "0.1.0",
+  "FriendlyName": "Honkai Motion Capture",
+  "Description": "In-process face, upper-body and hand capture using the native MediaPipe C API.",
+  "Category": "Animation",
+  "CreatedBy": "furinasdog",
+  "CanContainContent": false,
+  "EnabledByDefault": false,
+  "IsBetaVersion": true,
+  "SupportedTargetPlatforms": ["Win64"],
+  "Modules": [
+    { "Name": "HonkaiMotionCapture", "Type": "Runtime", "LoadingPhase": "Default", "PlatformAllowList": ["Win64"] }
+  ],
+  "Plugins": [{ "Name": "OpenCV", "Enabled": true }]
+}
