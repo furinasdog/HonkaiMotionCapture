@@ -2,6 +2,7 @@
 #include "HonkaiMotionCapture.h"
 #include "NativeMediaPipe.h"
 #include "OpenCvRuntimeCheck.h"
+#include "PreviewPixels.h"
 
 #include "HAL/Event.h"
 #include "HAL/PlatformProcess.h"
@@ -28,6 +29,19 @@ namespace
         mutable FCriticalSection Mutex;
         FHonkaiCaptureFrame Latest;
         uint64 Sequence = 0;
+        TAtomic<bool> bPreviewEnabled{false};
+
+        static void ClearPreview(FHonkaiCaptureFrame& Frame)
+        {
+            Frame.PreviewWidth = Frame.PreviewHeight = 0;
+            Frame.PreviewBGRA.Reset(); Frame.FaceLandmarks.Reset();
+        }
+        void SetPreviewEnabled(bool bEnabled)
+        {
+            FScopeLock Lock(&Mutex);
+            bPreviewEnabled.Store(bEnabled);
+            if (!bEnabled) ClearPreview(Latest);
+        }
 
         void PublishLocked(FHonkaiCaptureFrame Frame)
         {
@@ -100,6 +114,7 @@ namespace
         void PublishActive(FHonkaiCaptureFrame Frame)
         {
             FScopeLock Lock(&State->Mutex);
+            if (!State->bPreviewEnabled.Load()) FFrameState::ClearPreview(Frame);
             if (!bStop.Load()) State->PublishLocked(MoveTemp(Frame));
         }
         virtual uint32 Run() override
@@ -147,8 +162,9 @@ namespace
                         else cv::cvtColor(Bgr, Rgb, cv::COLOR_BGR2RGB);
                         if (bStop.Load()) break;
                         HonkaiCaptureNative::Frame Native;
+                        const bool bPreview = State->bPreviewEnabled.Load();
                         const double InferenceStarted = FPlatformTime::Seconds();
-                        if (!SDK.DetectRgb(Rgb.data, Rgb.cols, Rgb.rows, int(Rgb.step), int64(Captured * 1000.), Native, Error))
+                        if (!SDK.DetectRgb(Rgb.data, Rgb.cols, Rgb.rows, int(Rgb.step), int64(Captured * 1000.), Native, Error, bPreview))
                             throw std::runtime_error(Error);
                         const double Completed = FPlatformTime::Seconds();
                         if (bStop.Load()) break;
@@ -164,6 +180,20 @@ namespace
                         Frame.FaceRotationRH = FQuat4f(Native.faceRotationRH[0], Native.faceRotationRH[1], Native.faceRotationRH[2], Native.faceRotationRH[3]);
                         for (const auto& B : Native.blendShapes) Frame.BlendShapes.Add(FName(UTF8_TO_TCHAR(B.first.c_str())), B.second);
                         CopyLandmarks(Native.poseLandmarks, Frame.PoseLandmarks); CopyLandmarks(Native.poseWorldLandmarks, Frame.PoseWorldLandmarks);
+                        if (bPreview && State->bPreviewEnabled.Load())
+                        {
+                            cv::Mat Small = Rgb;
+                            const double Scale = FMath::Min(1., FMath::Min(320. / Rgb.cols, 240. / Rgb.rows));
+                            if (Scale < 1.) cv::resize(Rgb, Small, cv::Size(FMath::Max(1, FMath::FloorToInt(Rgb.cols * Scale)),
+                                FMath::Max(1, FMath::FloorToInt(Rgb.rows * Scale))), 0, 0, cv::INTER_AREA);
+                            std::vector<uint8_t> Pixels;
+                            const size_t Bytes = size_t(Small.rows - 1) * Small.step + size_t(Small.cols) * 3;
+                            if (!HonkaiCaptureNative::CopyPreviewRgbToBgra(Small.data, Small.cols, Small.rows, Small.step, Bytes, Pixels))
+                                throw std::runtime_error("Invalid preview RGB image buffer");
+                            Frame.PreviewWidth = Small.cols; Frame.PreviewHeight = Small.rows;
+                            Frame.PreviewBGRA.Append(Pixels.data(), int32(Pixels.size()));
+                            CopyLandmarks(Native.faceLandmarks, Frame.FaceLandmarks);
+                        }
                         for (const auto& H : Native.hands)
                         {
                             auto& Hand = Frame.Hands.AddDefaulted_GetRef(); Hand.Handedness = FName(UTF8_TO_TCHAR(H.handedness.c_str())); Hand.Score = H.score;
@@ -254,6 +284,7 @@ void FHonkaiMotionCapture::Stop()
     if (!IsRunning()) return;
     Impl->Worker->Stop();
 }
+void FHonkaiMotionCapture::SetPreviewEnabled(bool bEnabled) { Impl->State->SetPreviewEnabled(bEnabled); }
 bool FHonkaiMotionCapture::IsRunning() const { return Impl->Worker.IsValid() && !Impl->Worker->bFinished.Load(); }
 bool FHonkaiMotionCapture::IsStopping() const { return IsRunning() && Impl->Worker->bStop.Load(); }
 bool FHonkaiMotionCapture::Poll(FHonkaiCaptureFrame& Frame) { return Impl->State->Poll(Impl->LastPolledSequence, Frame); }
@@ -278,7 +309,8 @@ bool FHonkaiCaptureFrameTest::RunTest(const FString& Parameters)
     uint64 Last = 0;
     FHonkaiCaptureFrame Out;
     TestFalse(TEXT("No frame is distinct from an empty tracked result"), State.Poll(Last, Out));
-    FHonkaiCaptureFrame A; A.bFaceTracked = true; A.Width = 640; A.PoseLandmarks.SetNum(33);
+    FHonkaiCaptureFrame A; A.State = EHonkaiCaptureState::Running; A.bFaceTracked = true; A.Width = 640; A.PoseLandmarks.SetNum(33);
+    A.PreviewWidth = 2; A.PreviewHeight = 1; A.PreviewBGRA = {0,0,255,255, 255,0,0,255}; A.FaceLandmarks.SetNum(1);
     A.PoseLandmarks[11].Position.X = .7f; State.Publish(A);
     TestTrue(TEXT("Complete in-memory snapshot is available"), State.Poll(Last, Out));
     const double FirstTime = Out.TimestampSeconds;
@@ -286,13 +318,21 @@ bool FHonkaiCaptureFrameTest::RunTest(const FString& Parameters)
     TestFalse(TEXT("Polling without a new result returns no frame"), State.Poll(Last, Out));
     State.Status(EHonkaiCaptureState::Stopping, TEXT("stopping"));
     TestTrue(TEXT("Stopping produces an explicit state snapshot"), State.Poll(Last, Out) && Out.State == EHonkaiCaptureState::Stopping);
-    TestTrue(TEXT("Stopping does not replay old tracking"), !Out.bFaceTracked && Out.PoseLandmarks.IsEmpty());
+    TestTrue(TEXT("Stopping does not replay old tracking or preview"), !Out.bFaceTracked && Out.PoseLandmarks.IsEmpty()
+        && Out.PreviewBGRA.IsEmpty() && Out.FaceLandmarks.IsEmpty());
     TestTrue(TEXT("Snapshot timestamps are monotonic"), Out.TimestampSeconds > FirstTime);
     State.Publish(A); A.Width = 1280; State.Publish(A);
     TestTrue(TEXT("Polling keeps the newest complete frame"), State.Poll(Last, Out) && Out.Width == 1280 && Out.Sequence == 4);
     {
         const auto Shared = MakeShared<FFrameState, ESPMode::ThreadSafe>();
         FCaptureWorker Worker(Shared, FHonkaiCaptureSettings{}, FString());
+        Shared->SetPreviewEnabled(true); Worker.PublishActive(A);
+        uint64 PreviewSequence = 0;
+        TestTrue(TEXT("An enabled worker publishes preview from the same frame"), Shared->Poll(PreviewSequence, Out)
+            && Out.PreviewWidth == 2 && Out.PreviewBGRA.Num() == 8);
+        Shared->SetPreviewEnabled(false); Worker.PublishActive(A);
+        TestTrue(TEXT("A late image after hiding preview is discarded while tracking continues"), Shared->Poll(PreviewSequence, Out)
+            && Out.PreviewBGRA.IsEmpty() && Out.FaceLandmarks.IsEmpty() && Out.bFaceTracked && Out.PoseLandmarks.Num() == 33);
         Worker.Stop(); Worker.PublishActive(A);
         uint64 Sequence = 0;
         TestTrue(TEXT("A late inference result cannot overwrite a stop request"), Shared->Poll(Sequence, Out)

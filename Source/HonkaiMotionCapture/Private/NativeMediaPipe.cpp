@@ -217,7 +217,7 @@ bool MediaPipe::Initialize(const std::wstring& dll, const std::string& faceModel
 }
 
 bool MediaPipe::DetectRgb(const uint8_t* rgb, int width, int height, int stride,
-    int64_t timestampMs, Frame& out, std::string& error)
+    int64_t timestampMs, Frame& out, std::string& error, bool includeFaceLandmarks)
 {
     out = Frame{}; error.clear();
     try
@@ -261,6 +261,14 @@ bool MediaPipe::DetectRgb(const uint8_t* rgb, int width, int height, int stride,
                     || f.face_blendshapes_count != 1 || !f.face_blendshapes)
                     throw std::runtime_error("Incomplete MediaPipe face result");
                 next.faceRotationRH = RotationQuaternion(f.facial_transformation_matrixes[0]);
+                if (includeFaceLandmarks)
+                {
+                    const uint32_t count = f.face_landmarks[0].landmarks_count;
+                    // Optional overlay geometry must not invalidate an otherwise valid tracking result.
+                    if (count > 0 && count <= 512)
+                        try { next.faceLandmarks = ReadPoints(f.face_landmarks[0], count); }
+                        catch (const std::runtime_error&) { next.faceLandmarks.clear(); }
+                }
                 const auto& categories = f.face_blendshapes[0];
                 if (!categories.categories || categories.categories_count != 52) throw std::runtime_error("Unexpected MediaPipe face blendshape count");
                 for (uint32_t i = 0; i < categories.categories_count; ++i)

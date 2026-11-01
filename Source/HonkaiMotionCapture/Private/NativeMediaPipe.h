@@ -25,7 +25,7 @@ struct Frame
     bool faceTracked = false, poseTracked = false;
     std::array<float, 4> faceRotationRH{0, 0, 0, 1};
     std::map<std::string, float> blendShapes;
-    std::vector<Landmark> poseLandmarks, poseWorldLandmarks;
+    std::vector<Landmark> faceLandmarks, poseLandmarks, poseWorldLandmarks;
     std::vector<Hand> hands;
 };
 
@@ -42,7 +42,7 @@ public:
         const std::string& handModel, const std::string& poseModel, float confidence, std::string& error);
     // rgb must cover stride * height readable bytes; pixel data is not retained.
     bool DetectRgb(const uint8_t* rgb, int width, int height, int stride,
-        int64_t timestampMs, Frame& out, std::string& error);
+        int64_t timestampMs, Frame& out, std::string& error, bool includeFaceLandmarks = false);
 
 private:
     struct Impl;

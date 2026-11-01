@@ -81,7 +81,7 @@ int wmain(int argc, wchar_t** argv)
             std::vector<uint8_t> padded(size_t(stride) * height, 0);
             for (int row = 0; row < height; ++row) std::memcpy(padded.data() + size_t(row) * stride, rgb.data() + size_t(row) * width * 3, size_t(width) * 3);
             const auto inferStart = std::chrono::steady_clock::now();
-            if (!sdk->DetectRgb(padded.data(), width, height, stride, i * 33, frame, error))
+            if (!sdk->DetectRgb(padded.data(), width, height, stride, i * 33, frame, error, i != 2))
             { std::cerr << "Detect: " << error << '\n'; return 6; }
             double norm = 0; for (float v : frame.faceRotationRH) { if (!std::isfinite(v)) return 7; norm += v * v; }
             std::cout << "round=" << round << " frame=" << i << " face=" << frame.faceTracked << " blendshapes=" << frame.blendShapes.size()
@@ -90,6 +90,7 @@ int wmain(int argc, wchar_t** argv)
                 << " infer_ms=" << std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - inferStart).count()
                 << " face_quaternion_rh=" << frame.faceRotationRH[0] << ',' << frame.faceRotationRH[1] << ',' << frame.faceRotationRH[2] << ',' << frame.faceRotationRH[3] << '\n';
             if (!frame.faceTracked || frame.blendShapes.size() != 52 || frame.hands.size() != 2 || std::abs(norm - 1) > .0001) return 8;
+            if (i == 2 ? !frame.faceLandmarks.empty() : frame.faceLandmarks.size() != 478) return 11;
             if (frame.poseTracked) { if (frame.poseLandmarks.size() != 33 || frame.poseWorldLandmarks.size() != 33) return 8; ++poseFrames; }
             else if (!frame.poseLandmarks.empty() || !frame.poseWorldLandmarks.empty()) return 8;
             for (const auto& hand : frame.hands)

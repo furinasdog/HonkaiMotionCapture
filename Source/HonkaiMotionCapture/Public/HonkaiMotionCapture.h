@@ -39,6 +39,7 @@ struct FHonkaiCaptureFrame
     // Raw MediaPipe right-handed camera quaternion. The consuming rig owns basis conversion and mirroring.
     FQuat4f FaceRotationRH = FQuat4f::Identity;
     TMap<FName, float> BlendShapes;
+    TArray<FHonkaiCaptureLandmark> FaceLandmarks;
     TArray<FHonkaiCaptureLandmark> PoseLandmarks;
     TArray<FHonkaiCaptureLandmark> PoseWorldLandmarks;
     TArray<FHonkaiCaptureHand> Hands;
@@ -46,6 +47,10 @@ struct FHonkaiCaptureFrame
     float ProcessingFPS = 0;
     int32 Width = 0;
     int32 Height = 0;
+    // Optional unmirrored camera preview, tightly packed BGRA, never persisted.
+    int32 PreviewWidth = 0;
+    int32 PreviewHeight = 0;
+    TArray<uint8> PreviewBGRA;
     FString Status;
     FString Error;
 };
@@ -62,6 +67,8 @@ public:
     // True queues startup; Poll reports Starting/Running/Error after worker initialization.
     bool Start(const FHonkaiCaptureSettings& Settings, FString& Error);
     void Stop();
+    // Off by default. This only changes optional copies, never camera/tracking lifecycle.
+    void SetPreviewEnabled(bool bEnabled);
     bool IsRunning() const;
     bool IsStopping() const;
     bool Poll(FHonkaiCaptureFrame& Frame);
