@@ -1,83 +1,114 @@
-# HonkaiMotionCapture
+# MotionCapture
 
-独立的 UE 原生动捕插件，面向 Windows x64。通过进程内 MediaPipe 0.10.35 C API 计算面部、上半身和双手；使用引擎已安装的 OpenCV 模块采集。插件不依赖 HonkaiRendering，不启动外部 EXE，不使用 `frame.json` 或其他文件 IPC，也不包含 PMX 解析与骨骼重定向。
+用于 Unreal Engine 的原生摄像头动捕插件，通过 MediaPipe C API 在 UE 进程内计算面部、身体姿态和双手关键点，向宿主提供完整的内存快照。
 
-## 准备与构建
+插件适合由 C++ 宿主实现 VTuber、姿态预览或交互应用。它提供识别结果；角色骨骼绑定、表情映射、校准、平滑和 UI 由宿主实现。仓库不附带角色模型。
 
-将插件放入任一 UE 5.8 项目的 `Plugins/HonkaiMotionCapture`，启用插件和引擎 OpenCV 插件。当前源码基于本机 UE 5.8 的 OpenCV 4.5.5 模块，其他引擎版本尚未验证。
+## 功能与兼容性
 
-已有的本地运行库目录应包含 `libmediapipe.dll` 和 `Models/` 下的三个 `.task` 文件。运行：
+- 单人面部姿态四元数、52 个命名表情通道。
+- 单人身体姿态：33 个图像关键点及对应世界关键点。
+- 最多两只手：每只 21 个图像关键点、世界关键点及左右手分类。
+- 按需输出不超过 320 × 240 的 BGRA 摄像头预览和面部关键点。
+- 工作线程采集、推理；游戏线程通过 `Poll` 读取最新完整结果，无外部 EXE 或文件 IPC。
+
+| 项目 | 当前支持范围 |
+| --- | --- |
+| 平台 | Windows x64；不支持 Windows ARM64 |
+| UE | 当前适配 UE 5.8 的 OpenCV 4.5.5 模块；其他版本需要验证 ABI 和构建配置 |
+| 推理 | MediaPipe 0.10.35 C API，CPU，VIDEO 模式 |
+| 摄像头 | OpenCV DirectShow；实际分辨率、帧率由设备和驱动决定 |
+| 接口 | C++；当前没有蓝图封装或自带角色绑定器 |
+
+仓库名为 **MotionCapture**。为保留 UE 项目兼容性，插件目录、`.uplugin`、模块名和 C++ 接口仍使用 `HonkaiMotionCapture`，安装时请显式指定目录。
+
+## 快速开始
+
+### 1. 安装插件
+
+在 UE C++ 项目根目录运行：
 
 ```powershell
-./Scripts/Stage-LocalRuntime.ps1 -RuntimeSource '已有原生运行库/bin目录'
+git submodule add https://github.com/furinasdog/MotionCapture.git Plugins/HonkaiMotionCapture
+git submodule update --init --recursive
 ```
 
-脚本按 `Scripts/runtime-artifacts.json` 校验 SHA256，验证全部源文件后复制到本插件。它不下载、不执行输入目录中的程序，也不改变防火墙、代理、摄像头隐私或 SDK 全局设置。DLL 和模型均不提交到 Git。运行文件尚未准备时，插件可以编译，`Start` 返回明确错误。
+也可以直接 clone，目标目录保持一致：
 
-现有 Windows SDK 发行包提供 DLL，本机没有 Bazel/Bazelisk，本轮使用动态加载后端，没有把 import library 当作静态实现。静态源码构建并非不可实现：官方同版本 `tasks/c/BUILD` 的相关目标使用 `cc_binary(linkshared = True)`，真正静态构建需要独立处理该版本的构建目标和依赖；本仓尚未实现或验证这条路径。
+```powershell
+git clone https://github.com/furinasdog/MotionCapture.git Plugins/HonkaiMotionCapture
+```
 
-## C++ 接口
+在 `.uproject` 的 `Plugins` 数组启用以下两项，不覆盖已有条目：
 
-宿主模块依赖 `HonkaiMotionCapture`，包含 `HonkaiMotionCapture.h`：
+```json
+{ "Name": "HonkaiMotionCapture", "Enabled": true },
+{ "Name": "OpenCV", "Enabled": true }
+```
+
+### 2. 准备运行文件
+
+按[安装说明](doc/INSTALLATION.md)取得固定版本 DLL 和三份通用识别权重，整理为：
+
+```text
+runtime/
+  libmediapipe.dll
+  Models/
+    face_landmarker.task
+    hand_landmarker.task
+    pose_landmarker_lite.task
+```
+
+从 UE 项目根目录运行，将参数替换为实际目录：
+
+```powershell
+./Plugins/HonkaiMotionCapture/Scripts/Stage-LocalRuntime.ps1 -RuntimeSource '运行库目录'
+```
+
+脚本先校验全部源文件 SHA256，再复制到插件。它不下载文件、不安装环境、不执行输入目录中的程序。DLL 和识别权重不在 Git 仓库中；缺少它们时可编译插件，但不能启动识别。
+
+### 3. 接入宿主
+
+宿主 `.Build.cs` 添加 `HonkaiMotionCapture` 依赖，长期持有采集对象，在游戏线程启动并逐帧轮询：
 
 ```cpp
-FHonkaiMotionCapture Capture;
-FString Error;
-Capture.Start(FHonkaiCaptureSettings{}, Error);
+#include "HonkaiMotionCapture.h"
 
+// 宿主类成员，不要在每次 Tick 中临时创建。
+FHonkaiMotionCapture Capture;
+
+// 初始化：true 表示已排队，尚不能认定摄像头可用。
+FString Error;
+const bool bQueued = Capture.Start(FHonkaiCaptureSettings{}, Error);
+
+// Tick：Running 也可能未检测到任何人。
 FHonkaiCaptureFrame Frame;
-if (Capture.Poll(Frame))
+if (Capture.Poll(Frame) && Frame.State == EHonkaiCaptureState::Running)
 {
-    // 检查 State。Running 帧中的 bFaceTracked/bPoseTracked 可为 false。
-    // FaceRotationRH 和关键点仍为原始 MediaPipe 坐标。
+    if (Frame.bFaceTracked)
+    {
+        // FaceRotationRH / BlendShapes → 坐标转换、校准和角色映射。
+    }
 }
+
+// 停止或宿主 EndPlay：发出协作停止请求。
 Capture.Stop();
 ```
 
-`Start`、`Stop`、`Poll` 在宿主游戏线程调用。`Start` 返回 true 表示工作已排队，SDK 与摄像头是否成功仍需读取 `Poll` 的 Starting/Running/Error 状态。采集对象应作为长期成员保存并在 Tick 中轮询。推理和摄像头操作由一个后台线程独占；游戏线程只复制最新完整快照。序号、时间戳在同一采集对象的重启之间仍单调递增，未出现新快照时 `Poll` 返回 false。面部、身体与手部均来自同一采集帧，没有将未检测的默认值当成有效追踪。
+以上是三个生命周期位置的片段，不是依次在一个函数中执行的完整示例。状态处理、停止与重启、坐标及预览接入见[集成说明](doc/INTEGRATION.md)。
 
-快照包括 SDK 原始右手相机四元数、52 个面部通道、33 个 pose/image 与 world 关键点、左右手各 21 个 image/world 关键点。SDK 未检测到某部位时对应数组为空。插件不镜像、不修改动作方向、不校准中立姿态；宿主应统一做坐标转换、镜像、可见度判断、校准和模型映射，避免头部与身体采用不同转换。
+## 文档与贡献
 
-`InferenceMilliseconds` 仅计 SDK 调用，`ProcessingFPS` 是实际成功处理帧之间的测量值，并非请求的摄像头帧率，也不是端到端显示延迟。
+- [安装、固定运行库与打包](doc/INSTALLATION.md)
+- [C++ 集成、输出语义与故障排查](doc/INTEGRATION.md)
+- [实现原理与源码导览](doc/ARCHITECTURE.md)
+- [构建与测试](doc/TESTING.md)
+- [参与贡献](CONTRIBUTING.md)
 
-宿主可调用 `SetPreviewEnabled(true)`，按需取得同一摄像头帧的 `PreviewWidth`、`PreviewHeight`、紧密排列的 `PreviewBGRA` 和 `FaceLandmarks`。预览最长宽320、高240，保持比例；它复用采集线程，不打开第二个摄像头、不保存图像文件。图像和关键点仍未镜像，宿主应对两者只做一次相同的镜像。关闭预览会清除图像与面点，并丢弃晚到预览；动捕继续运行。停止采集会一并清除预览。预览不是额外的录制或输出功能。
+问题反馈请提供 UE/插件版本、Windows 与摄像头信息、复现步骤和脱敏日志。请勿上传未经授权的模型、个人录像或相机画面。
 
-## 生命周期与当前边界
+## 许可证与运行边界
 
-`Stop` 异步请求协作停止并立即清除有效追踪。`IsStopping` 会保持到工作线程释放摄像头和 SDK；停止未完成时拒绝重复启动。插件不会强杀 UE 线程。销毁采集对象会请求停止，模块保留工作线程直到退出；模块卸载时等待所有线程结束。
+原创代码采用 [MIT](LICENSE)。MediaPipe 头文件、运行库、识别权重、OpenCV 和 Unreal Engine 各自适用原始许可或条款，详见[第三方说明](THIRD_PARTY_NOTICES.md)。本项目不会把它们重新授权为 MIT。
 
-OpenCV 运行库由官方 `OpenCVHelper` 模块持有。启动前只使用 `GetModuleHandleW` 检查模块是否已加载，不增加引用、不释放借用句柄。UE Windows 的 `GetDllHandle` 对已加载模块可能返回借用句柄，不能把该结果当作独立引用释放，否则重复启动时缓存的延迟导入地址可能失效。
-
-OpenCV DirectShow 的读取/释放和 SDK 关闭可能受驱动或 SDK 阻塞影响，当前不能保证有界停止时间。模块卸载可能因此等待，不能将这种等待称为已解决。进程内原生 DLL 的严重故障也可能影响 UE；原先外部进程的崩溃隔离不再存在。
-
-官方预编译 MediaPipe SDK 包含 usage/performance telemetry，官方没有提供关闭 API。此插件在 UE 进程内运行，**不再有 AppContainer 网络隔离，不声称完全离线或绝不联网**；插件本身没有另加图像上传接口。相关事实和限制见 [上游 issue 6291](https://github.com/google-ai-edge/mediapipe/issues/6291) 与 [MediaPipe API 条款](https://developers.google.com/edge/mediapipe/legal/tos)。
-
-## 验证
-
-UE 自动化 `HonkaiMotionCapture.InMemorySnapshots` 检查完整快照、状态、单调序号/时间、重复读取及无效参数，不会打开摄像头。`Tests/NativeSdkSmoke.cpp` 通过同一原生 C API 核心对静态图片执行 VIDEO 模式推理，不通过文件交换快照；静态图片验证不等于真人摄像头验收。
-
-独立 fixture 可使用已安装的 CMake/MSVC 编译，不需要 UE 或 OpenCV：
-
-```powershell
-cmake -S Tests -B Tests/build -A x64 -DMEDIAPIPE_RUNTIME_DIR='原生运行库/bin目录' -DFIXTURE_IMAGE='本地测试图片路径'
-cmake --build Tests/build --config Release
-ctest --test-dir Tests/build -C Release --output-on-failure
-```
-
-只验证真实 OpenCV 模块的预检查生命周期，不启动摄像头、MediaPipe 或 UE：
-
-```powershell
-cmake -S Tests -B Tests/build -A x64 -DOPENCV_RUNTIME_DLL='引擎插件内opencv_world455.dll完整路径'
-cmake --build Tests/build --config Release --target RuntimeModuleLiveness
-ctest --test-dir Tests/build -C Release -R OpenCvRuntimeModuleLiveness --output-on-failure
-```
-
-该测试直接编译生产预检查函数，连续三轮加载/卸载实际 OpenCV DLL；每轮2000次检查验证构造函数代码所在模块持续存活，并验证最后一个拥有者释放后模块能卸载。测试不调用 `VideoCapture` 构造或相机接口，不使用 PIN，也不以快照轮询替代模块存活验证。
-
-独立 C++ fixture 已完成两轮 SDK 初始化、每轮 3 个递增 VIDEO 帧和关闭：均检测到面部 52 通道、双手各 21 个 image/world 点，姿态在每轮 3 帧中有 2 帧检出 33 个 image/world 点，未检出的帧保持为空。本机重复试验观察到初始化约 150–200 ms、推理约 28–65 ms、关闭约 27–75 ms，均为这张静态测试图片的结果。SDK stderr 包含 clearcut 连接尝试失败，不能据此声称插件实施了网络隔离。
-
-本机 UE 5.8.4 Development Editor 编译及 `HonkaiMotionCapture.InMemorySnapshots` 自动化已通过；宿主的输入转换测试也已通过。真实摄像头帧率、关闭/重开、长时间运行和打包分发需分别验证。
-
-## 许可证
-
-本插件代码使用 MIT。MediaPipe C API 头文件保持 v0.10.35 原始 Apache 2.0 声明，OpenCV 的 Apache 2.0 及附带第三方声明单独保留。MIT 不替代上游 SDK、模型或 API 条款。详见 `THIRD_PARTY_NOTICES.md`。
+MediaPipe 的[官方 API 条款](https://developers.google.com/edge/mediapipe/legal/tos)说明了设备端输入处理和使用/性能指标通信。本插件没有网络沙箱或关闭 SDK 遥测的接口，不能承诺完全离线。原生 DLL 与 UE 共用进程，严重原生故障可能影响宿主；DirectShow 或 SDK 阻塞时不能保证立即停止。静态图片或内存测试不代表真人动捕和最终角色效果已验收。
